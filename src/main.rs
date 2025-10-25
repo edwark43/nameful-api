@@ -18,7 +18,7 @@ async fn main() {
     let _ = Config::init();
     let config = Config::new();
     let app = Router::new()
-        .route("/", get(|| async { "New Nameful API: v2" }))
+        .route("/", get(|| async { format!("New Nameful API: {}", env!("GIT_HASH")) }))
         .route("/leadership", get(leadership))
         .route("/leadership/nicked", get(leadership_nicked))
         .route("/elections", get(elections))
