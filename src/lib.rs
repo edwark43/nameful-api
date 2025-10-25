@@ -3,7 +3,7 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use image;
 use magick_rust::{MagickWand, PixelWand, magick_wand_genesis};
 use maxminddb::geoip2;
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{boxed::Box, error::Error, fs, io::Write, net::IpAddr, path, sync::Once};
@@ -15,6 +15,7 @@ static START: Once = Once::new();
 #[derive(Deserialize)]
 pub struct Config {
     pub port: u16,
+    pub token: String,
     pub maxmind_db: String,
     pub propaganda_path: String,
     pub cache_path: String,
@@ -49,7 +50,7 @@ impl Config {
             let mut config_file = fs::File::create(&config_path)?;
             write!(
                 &mut config_file,
-                "port = 3568\nmaxmind_db = \"path/to/db\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"",
+                "port = 3568\ntoken = \"\"\nmaxmind_db = \"path/to/db\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"",
                 cache_path, data_path
             )?;
         }
@@ -298,6 +299,20 @@ pub fn dir_to_json(path: String) -> Result<Value, Box<dyn Error>> {
         }
     }
     Ok(json!(result))
+}
+
+pub async fn get_nickname(config: Config, username: &String) -> Result<String, Box<dyn Error>> {
+    let client = reqwest::Client::new();
+    let resp = client.get(format!("https://micro.os-mc.net/profile_service/ess/{}", username))
+        .header(HeaderName::from_lowercase(b"content-type").unwrap(), HeaderValue::from_str("application/json").unwrap())
+        .body(format!("{{\"token\":\"{}\"}}", config.token))
+        .send()
+        .await?;
+    let json_object = serde_json::from_str::<serde_json::Value>(&resp.text().await?)?;
+    match json!(json_object).get("nickname") {
+        Some(j) => Ok(j.as_str().unwrap_or_else(|| username).to_string()),
+        None => Ok(username.as_str().to_string())
+    }
 }
 
 pub fn get_geoip_data(ip: IpAddr) -> Result<Value, Box<dyn Error>> {

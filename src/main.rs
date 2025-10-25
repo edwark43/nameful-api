@@ -29,7 +29,9 @@ async fn main() {
         .route("/splash", get(splash))
         .route("/propaganda", get(propaganda))
         .route("/online", get(online))
+        .route("/ip", get(ip))
         .route("/geoip", get(geoip))
+        .route("/nickname/{username}", get(nickname))
         .route("/render/{armored}/{render_type}/{username}", get(render));
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
@@ -177,6 +179,10 @@ async fn online() -> Json<Value> {
     }
 }
 
+async fn ip(XRealIp(ip): XRealIp) -> Json<Value> {
+    Json(json!({"ip":ip}))
+}
+
 async fn geoip(XRealIp(ip): XRealIp) -> Json<Value> {
     match get_geoip_data(ip) {
         Ok(j) => Json(j),
@@ -184,7 +190,7 @@ async fn geoip(XRealIp(ip): XRealIp) -> Json<Value> {
     }
 }
 
-async fn splash(XRealIp(ip): XRealIp) -> String {
+async fn splash(XRealIp(ip): XRealIp) -> Json<Value> {
     let config = Config::new();
     let splashes: Vec<Value> = match read_json_from_file(format!("{}/data.json", config.data_path))
     {
@@ -192,11 +198,19 @@ async fn splash(XRealIp(ip): XRealIp) -> String {
         Err(e) => vec![json!({"error":e.to_string()})],
     };
 
-    let rand_num = random_range(0..splashes.len() /* + 1*/);
+    let rand_num = random_range(0..splashes.len() + 1);
 
     if rand_num == splashes.len() {
-        return ip.to_string();
+        return Json(json!({"splash":ip.to_string()}));
     } else {
-        return splashes.get(rand_num).unwrap().to_string();
+        return Json(json!({"splash":splashes.get(rand_num).unwrap().as_str()}));
+    }
+}
+
+async fn nickname(extract::Path(username): extract::Path<String>) -> Json<Value> {
+    let config = Config::new();
+    match get_nickname(config, &username).await {
+        Ok(j) => Json(json!({"nickname":j})),
+        Err(..) => Json(json!({"nickname":username})),
     }
 }
