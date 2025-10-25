@@ -303,15 +303,22 @@ pub fn dir_to_json(path: String) -> Result<Value, Box<dyn Error>> {
 
 pub async fn get_nickname(config: Config, username: &String) -> Result<String, Box<dyn Error>> {
     let client = reqwest::Client::new();
-    let resp = client.get(format!("https://micro.os-mc.net/profile_service/ess/{}", username))
-        .header(HeaderName::from_lowercase(b"content-type").unwrap(), HeaderValue::from_str("application/json").unwrap())
+    let resp = client
+        .get(format!(
+            "https://micro.os-mc.net/profile_service/ess/{}",
+            username
+        ))
+        .header(
+            HeaderName::from_lowercase(b"content-type").unwrap(),
+            HeaderValue::from_str("application/json").unwrap(),
+        )
         .body(format!("{{\"token\":\"{}\"}}", config.token))
         .send()
         .await?;
     let json_object = serde_json::from_str::<serde_json::Value>(&resp.text().await?)?;
     match json!(json_object).get("nickname") {
         Some(j) => Ok(j.as_str().unwrap_or_else(|| username).to_string()),
-        None => Ok(username.as_str().to_string())
+        None => Ok(username.as_str().to_string()),
     }
 }
 
