@@ -173,7 +173,8 @@ async fn propaganda() -> Json<Value> {
 }
 
 async fn online() -> Json<Value> {
-    match read_json_from_url(String::from("http://127.0.0.1:3093")).await {
+    let config = Config::new();
+    match read_json_from_url(config.online_url).await {
         Ok(j) => Json(j),
         Err(e) => Json(json!({"error":e.to_string()})),
     }

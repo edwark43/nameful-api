@@ -20,6 +20,7 @@ pub struct Config {
     pub propaganda_path: String,
     pub cache_path: String,
     pub data_path: String,
+    pub online_url: String
 }
 
 impl Config {
@@ -50,7 +51,7 @@ impl Config {
             let mut config_file = fs::File::create(&config_path)?;
             write!(
                 &mut config_file,
-                "port = 3568\ntoken = \"\"\nmaxmind_db = \"path/to/db\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"",
+                "port = 3568\ntoken = \"\"\nmaxmind_db = \"path/to/db\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"\n\"online_url\" = \"http://127.0.0.1:PORT\"",
                 cache_path, data_path
             )?;
         }
