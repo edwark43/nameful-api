@@ -17,6 +17,7 @@ use axum_client_ip::XRealIp;
 #[tokio::main]
 async fn main() {
     let _ = Config::init();
+    let config = Config::new();
     let app = Router::new()
         .route("/", get(|| async { "New Nameful API: v2" }))
         .route("/leadership", get(leadership))
@@ -31,7 +32,7 @@ async fn main() {
         .route("/online", get(online))
         .route("/geoip", get(geoip))
         .route("/render/{armored}/{render_type}/{username}", get(render));
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3568").await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await.unwrap();
 
     axum::serve(
         listener,

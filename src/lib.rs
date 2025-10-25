@@ -10,6 +10,7 @@ static START: Once = Once::new();
 
 #[derive(Deserialize)]
 pub struct Config {
+    pub port: u16,
     pub maxmind_db: String,
     pub propaganda_path: String,
     pub cache_path: String,
@@ -42,7 +43,7 @@ impl Config {
             let mut config_file = fs::File::create(&config_path)?;
             write!(
                 &mut config_file,
-                "maxmind_db = \"path/to/db\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"",
+                "port = 3568\nmaxmind_db = \"path/to/db\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"",
                 cache_path, data_path
             )?;
         }
