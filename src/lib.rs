@@ -1,3 +1,4 @@
+use axum::response::Json;
 use magick_rust::{MagickWand, PixelWand, magick_wand_genesis};
 use maxminddb::geoip2;
 use serde::Deserialize;
@@ -219,6 +220,13 @@ pub fn read_json_from_file(path: String) -> Result<Value, Box<dyn Error>> {
     let json_object = serde_json::from_str::<serde_json::Value>(&file)?;
 
     Ok(json!(json_object))
+}
+
+pub fn json_at_key(path: String, key: String) -> Json<Value> {
+    match read_json_from_file(path) {
+        Ok(j) => Json(j.get(key).unwrap().clone()),
+        Err(e) => Json(json!({"error":e.to_string()})),
+    }
 }
 
 pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn Error>> {

@@ -6,13 +6,12 @@ use axum::{
     response::{IntoResponse, Json},
     routing::get,
 };
+use axum_client_ip::XRealIp;
 use nameful_api::*;
 use rand::random_range;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use tokio_util::io::ReaderStream;
-use axum_client_ip::XRealIp;
-
 
 #[tokio::main]
 async fn main() {
@@ -32,7 +31,9 @@ async fn main() {
         .route("/online", get(online))
         .route("/geoip", get(geoip))
         .route("/render/{armored}/{render_type}/{username}", get(render));
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
+        .await
+        .unwrap();
 
     axum::serve(
         listener,
@@ -40,13 +41,6 @@ async fn main() {
     )
     .await
     .unwrap();
-}
-
-fn json_at_key(path: String, key: String) -> Json<Value> {
-    match read_json_from_file(path) {
-        Ok(j) => Json(j.get(key).unwrap().clone()),
-        Err(e) => Json(json!({"error":e.to_string()})),
-    }
 }
 
 async fn leadership() -> Json<Value> {
@@ -185,7 +179,6 @@ async fn online() -> Json<Value> {
     }
 }
 
-
 async fn geoip(XRealIp(ip): XRealIp) -> Json<Value> {
     match get_geoip_data(ip) {
         Ok(j) => Json(j),
@@ -201,7 +194,7 @@ async fn splash(XRealIp(ip): XRealIp) -> String {
         Err(e) => vec![json!({"error":e.to_string()})],
     };
 
-    let rand_num = random_range(0..splashes.len()/* + 1*/);
+    let rand_num = random_range(0..splashes.len() /* + 1*/);
 
     if rand_num == splashes.len() {
         return ip.to_string();
