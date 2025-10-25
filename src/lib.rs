@@ -1,7 +1,71 @@
-use magick_rust::{magick_wand_genesis, MagickWand, PixelWand};
-use std::sync::Once;
+use magick_rust::{MagickWand, PixelWand, magick_wand_genesis};
+use maxminddb::geoip2;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::{boxed::Box, error::Error, fs, io::Write, net::IpAddr, path, sync::Once};
+use toml;
+use xdg::BaseDirectories;
 
 static START: Once = Once::new();
+
+#[derive(Deserialize)]
+pub struct Config {
+    pub maxmind_db: String,
+    pub propaganda_path: String,
+    pub cache_path: String,
+    pub data_path: String,
+}
+
+impl Config {
+    pub fn init() -> Result<(), Box<dyn Error>> {
+        let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+        let config_path = xdg_dirs
+            .place_config_file("config.toml")
+            .expect("cannot create configuration directory");
+        let cache_path = xdg_dirs
+            .cache_home
+            .clone()
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .unwrap()
+            + "/nameful-api";
+        let data_path = xdg_dirs
+            .data_home
+            .clone()
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .unwrap()
+            + "/nameful-api";
+        if xdg_dirs.find_config_file(&config_path) == None {
+            let mut config_file = fs::File::create(&config_path)?;
+            write!(
+                &mut config_file,
+                "maxmind_db = \"path/to/db\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"",
+                cache_path, data_path
+            )?;
+        }
+        let _ = fs::create_dir_all(format!("{}/", data_path));
+        let _ = fs::create_dir_all(format!("{}/armor/head", cache_path));
+        let _ = fs::create_dir_all(format!("{}/armor/bust", cache_path));
+        let _ = fs::create_dir_all(format!("{}/armor/body", cache_path));
+        let _ = fs::create_dir_all(format!("{}/armorless/head", cache_path));
+        let _ = fs::create_dir_all(format!("{}/armorless/bust", cache_path));
+        let _ = fs::create_dir_all(format!("{}/armorless/body", cache_path));
+        let _ = fs::create_dir_all(format!("{}/skins", cache_path));
+        Ok(())
+    }
+    pub fn new() -> Config {
+        let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+        let config_path = xdg_dirs
+            .place_config_file("config.toml")
+            .expect("cannot create configuration directory");
+        let content = fs::read_to_string(&config_path).unwrap();
+        let config: Config = toml::from_str(&content).unwrap();
+        config
+    }
+}
 
 pub struct Render {
     skin_filepath: String,
@@ -23,22 +87,49 @@ impl Render {
 
         let render = MagickWand::new();
         let _ = render.new_image(16 * size, 32 * size, &background);
-        Render { skin_filepath, size, old, skin, render }
+        Render {
+            skin_filepath,
+            size,
+            old,
+            skin,
+            render,
+        }
     }
 
-    pub fn render_body_part(&self, skin_box_sizes: [usize; 2], skin_box_offsets: [usize; 2], output_offsets: [usize; 2], old: bool) -> &Render {
+    fn render_body_part(
+        &self,
+        skin_box_sizes: [usize; 2],
+        skin_box_offsets: [usize; 2],
+        output_offsets: [usize; 2],
+        old: bool,
+    ) -> &Render {
         START.call_once(|| {
             magick_wand_genesis();
         });
 
         let _ = &self.skin.read_image(&self.skin_filepath);
-        let _ = &self.skin.crop_image(skin_box_sizes[0], skin_box_sizes[1], skin_box_offsets[0] as isize, skin_box_offsets[1] as isize);
-        let _ = &self.skin.resize_image(skin_box_sizes[0] * self.size, skin_box_sizes[1] * self.size, magick_rust::FilterType::Box);
+        let _ = &self.skin.crop_image(
+            skin_box_sizes[0],
+            skin_box_sizes[1],
+            skin_box_offsets[0] as isize,
+            skin_box_offsets[1] as isize,
+        );
+        let _ = &self.skin.resize_image(
+            skin_box_sizes[0] * self.size,
+            skin_box_sizes[1] * self.size,
+            magick_rust::FilterType::Box,
+        );
         if old {
             let _ = &self.skin.flop_image();
         }
 
-        let _ = &self.render.compose_images(&self.skin, magick_rust::CompositeOperator::Over, true, output_offsets[0] as isize * self.size as isize, output_offsets[1] as isize * self.size as isize);
+        let _ = &self.render.compose_images(
+            &self.skin,
+            magick_rust::CompositeOperator::Over,
+            true,
+            output_offsets[0] as isize * self.size as isize,
+            output_offsets[1] as isize * self.size as isize,
+        );
         self
     }
 
@@ -56,17 +147,27 @@ impl Render {
             }
             "bust" => {
                 bust = true;
-                crop = [self.render.get_image_width(), self.render.get_image_width(), 0, 0]
+                crop = [
+                    self.render.get_image_width(),
+                    self.render.get_image_width(),
+                    0,
+                    0,
+                ]
             }
             _ => {
-                crop = [self.render.get_image_width(), self.render.get_image_height(), 0, 0]
+                crop = [
+                    self.render.get_image_width(),
+                    self.render.get_image_height(),
+                    0,
+                    0,
+                ]
             }
         }
 
-
         if !head {
-            let _ = &self.render_body_part([8, 12], [20, 20], [4, 8], false)
-            .render_body_part([4, 12], [44, 20], [0, 8], false);
+            let _ = &self
+                .render_body_part([8, 12], [20, 20], [4, 8], false)
+                .render_body_part([4, 12], [44, 20], [0, 8], false);
             if self.old {
                 let _ = &self.render_body_part([4, 12], [44, 20], [12, 8], true);
             } else {
@@ -84,26 +185,92 @@ impl Render {
             }
         }
 
-        if armored && !&self.old{
+        if armored && !&self.old {
             let _ = &self.render_body_part([8, 8], [40, 8], [4, 0], false);
-            
+
             if !head {
-                let _ = &self.render_body_part([8, 12], [20, 36], [4, 8], false)
-                .render_body_part([4, 12], [44, 36], [0, 8], false)
-                .render_body_part([4, 12], [52, 52], [12, 8], false);
+                let _ = &self
+                    .render_body_part([8, 12], [20, 36], [4, 8], false)
+                    .render_body_part([4, 12], [44, 36], [0, 8], false)
+                    .render_body_part([4, 12], [52, 52], [12, 8], false);
             }
 
             if !bust {
-                let _ = &self.render_body_part([4, 12], [4, 36], [4, 20], false)
-                .render_body_part([4, 12], [4, 52], [8, 20], false);
+                let _ = &self
+                    .render_body_part([4, 12], [4, 36], [4, 20], false)
+                    .render_body_part([4, 12], [4, 52], [8, 20], false);
             }
         }
-        let _ = &self.render.crop_image(crop[0], crop[1], crop[2] as isize, crop[3] as isize);
+        let _ = &self
+            .render
+            .crop_image(crop[0], crop[1], crop[2] as isize, crop[3] as isize);
         &self
     }
 
-    pub fn write_image(&self) -> () {
-        let _ = self.render.write_image("render.png");
+    pub fn write_image(&self, path: String) -> () {
+        let _ = self.render.write_image(&path);
         ()
     }
+}
+
+pub fn read_json_from_file(path: String) -> Result<Value, Box<dyn Error>> {
+    let file = fs::read_to_string(path)?;
+    let json_object = serde_json::from_str::<serde_json::Value>(&file)?;
+
+    Ok(json!(json_object))
+}
+
+pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn Error>> {
+    if fs::exists(&path)? {
+        let metadata = fs::metadata(&path)?;
+        if let Ok(time) = metadata.created() {
+            let difference = time
+                .duration_since(time)
+                .expect("Something went horribly wrong.");
+            if difference.as_secs() < 604800 {
+                return Ok(());
+            }
+        }
+    }
+    let resp = reqwest::get(format!(
+        "https://micro.os-mc.net/cosmetics/skin/{}",
+        username
+    ))
+    .await?;
+    let body = resp.bytes().await?;
+    let mut out = fs::File::create(&path)?;
+    let _ = out.write_all(&body);
+    Ok(())
+}
+
+pub async fn read_json_from_url(url: String) -> Result<Value, Box<dyn Error>> {
+    let resp = reqwest::get(url).await?;
+    let text = resp.text().await?;
+    let json_object = serde_json::from_str::<serde_json::Value>(&text)?;
+    Ok(json!(json_object))
+}
+
+pub fn dir_to_json(path: String) -> Result<Value, Box<dyn Error>> {
+    let dir = path::Path::new(&path);
+    let mut result = vec![];
+    if dir.is_dir() {
+        for file in fs::read_dir(dir)? {
+            let file = file?;
+            let full_path = file.path();
+
+            if full_path.is_file() {
+                result.push(format!(
+                    "{}",
+                    full_path.file_name().unwrap().to_str().unwrap()
+                ));
+            }
+        }
+    }
+    Ok(json!(result))
+}
+
+pub fn get_geoip_data(ip: IpAddr) -> Result<Value, Box<dyn Error>> {
+    let reader = maxminddb::Reader::open_readfile("/etc/nginx/GeoIP2/GeoLite2-City.mmdb")?;
+    let city = reader.lookup::<geoip2::City>(ip).unwrap().unwrap();
+    Ok(json!(city))
 }
