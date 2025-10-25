@@ -139,14 +139,12 @@ async fn render(
         }
     };
 
-    if filename == format!("{}.png", username) {
-        Render::new(
-            String::from(format!("{}/skins/{}.png", config.cache_path, username)),
-            6,
-        )
-        .render_body(render_type, armored)
-        .write_image(path.clone());
-    }
+    Render::new(
+        String::from(format!("{}/skins/{}", config.cache_path, filename)),
+        6,
+    )
+    .render_body(render_type, armored)
+    .write_image(path.clone());
 
     let file = match tokio::fs::File::open(&path).await {
         Ok(file) => file,

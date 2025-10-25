@@ -1,6 +1,9 @@
 use axum::response::Json;
+use base64::{Engine, prelude::BASE64_STANDARD};
+use image;
 use magick_rust::{MagickWand, PixelWand, magick_wand_genesis};
 use maxminddb::geoip2;
+use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{boxed::Box, error::Error, fs, io::Write, net::IpAddr, path, sync::Once};
@@ -20,6 +23,8 @@ pub struct Config {
 
 impl Config {
     pub fn init() -> Result<(), Box<dyn Error>> {
+        let error_base64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAdVBMVEUAAAD///+qclmbY0mQWT+PXj6BUzl2SzM/KhUzJBErHg0kGAgmGgo6MYlBNZtGOqUFiIgElZUApKQAr68KvLw3Nzc/Pz9KSkpVVVUAzMyUYD5qQDB3QjVJJRBCHQooKCgAf38AaGg0JRIDenqzeV63g2tSPYnw8BGEAAAAAXRSTlMAQObYZgAAAo5JREFUSA3t1oWOM1cAQ+HPNymlzMx9/ycqV/Qz0eJ1GTKFya642iOy6MjXgwHYaVTOACcOYwugTRsEdSgDQMNgBjIvLkiqKcAlBDStQrnoBpVQYw7MXGKD0qSjKrlwg6CJ9B1cqwPJTiVVRUJaoZE2j1eP0CTaIaSdlaSYxLQmaKuzevL+hx8cn76bzppKlKwfIa1Rx/3M1+QZmZJWGvpk9QiTHB+nHV/ni/bnzGRExRrbInUUX77ry+RIUxrSyOoGIzk9Gpu3s3k/+WCzeXszjk6TAbFOnp465sgbN99peq3NHDMGT+Nk9bEOvIhn7XwHePdaon37IeAB4HV6r8x/uhN3HgOQEP9IJf8oeGxnlRSt1QYVrSVFut8gL2nCTEPMLUbvRl/JxKiSoMSLeIBbgK0CEIaKvHzPy6Ei0kAJoioAg0AA+vrrrbz6UvTnPFGmSnSCqOUGoPI6r99OJPpzvkORFwH5Ld/+q6AVaSaFNlBAgx9I04AurkJISyq3XneLBn7OCaFFtUnVQiAQCW6RqIZbIFSqyHKDIfYIKY0mBBRQEC2AbQUlBYQZUVJBtaSg9tjuPFawAyeBtkkJ1bQKNHRPMLMjRZvoeVPifDP0XIxUzweQghTAVhtUKUVEx2SKdHYzh7RRSdMQV/yfiAN5A2iRcNMVV6zcSC/iNY/dALwW7pBzLNmy5J8/96OtgwXLz710wuUbtKPNQRu8pInSCH0ND5QAt+wz/AOVUIgEoWg5TIAAMCtRlcM2yH6VvLyQJwC6FNAwBSb9AZqmIGfrDRqRIpVKSxV0fYMgARkjEJRILjCigIAC7fqIFRoUUCCFdcHOY1rswCMU6EGC5f8CSAHpqsDyfyENoqJiwY8icHkmoi9YwQAAAABJRU5ErkJggg==";
+        let error: &[u8] = &BASE64_STANDARD.decode(error_base64)?;
         let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
         let config_path = xdg_dirs
             .place_config_file("config.toml")
@@ -56,6 +61,10 @@ impl Config {
         let _ = fs::create_dir_all(format!("{}/armorless/bust", cache_path));
         let _ = fs::create_dir_all(format!("{}/armorless/body", cache_path));
         let _ = fs::create_dir_all(format!("{}/skins", cache_path));
+        if !fs::exists(format!("{}/skins/error.png", cache_path))? {
+            let img = image::load_from_memory(&error)?;
+            let _ = img.save(format!("{}/skins/error.png", cache_path))?;
+        }
         Ok(())
     }
     pub fn new() -> Config {
@@ -232,6 +241,9 @@ pub fn json_at_key(path: String, key: String) -> Json<Value> {
 pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn Error>> {
     if fs::exists(&path)? {
         let metadata = fs::metadata(&path)?;
+        if username == "error" {
+            return Err("Username Disallowed".into());
+        }
         if let Ok(time) = metadata.created() {
             let difference = time
                 .duration_since(time)
@@ -246,10 +258,20 @@ pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn
         username
     ))
     .await?;
-    let body = resp.bytes().await?;
-    let mut out = fs::File::create(&path)?;
-    let _ = out.write_all(&body);
-    Ok(())
+    match resp.error_for_status() {
+        Ok(resp) => {
+            if resp.headers()[CONTENT_TYPE] != "image/png" {
+                return Err("Username Disallowed".into());
+            }
+            let body = resp.bytes().await?;
+            let mut out = fs::File::create(&path)?;
+            let _ = out.write_all(&body);
+            Ok(())
+        }
+        Err(err) => {
+            return Err(Box::new(err));
+        }
+    }
 }
 
 pub async fn read_json_from_url(url: String) -> Result<Value, Box<dyn Error>> {
