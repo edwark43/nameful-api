@@ -36,7 +36,7 @@ async fn main() {
         .route("/ip", get(ip))
         .route("/geoip", get(geoip))
         .route("/nickname/{username}", get(nickname))
-        .route("/render/{armored}/{render_type}/{username}", get(render));
+        .route("/render/{armored}/{render_type}/{username}/{width}", get(render));
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
         .unwrap();
@@ -106,7 +106,7 @@ async fn news_notice() -> Json<Value> {
 }
 
 async fn render(
-    extract::Path((armored, render_type, username)): extract::Path<(String, String, String)>,
+    extract::Path((armored, render_type, username, width)): extract::Path<(String, String, String, isize)>,
 ) -> impl IntoResponse {
     let config = Config::new();
 
@@ -119,8 +119,19 @@ async fn render(
         Ok(..) => format!("{}.png", username),
         Err(..) => String::from("error.png"),
     };
-
-    let armored = armored == "armored";
+    let armored = match armored.as_str() {
+        "armored" => true,
+        "armorless" => false,
+        _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request")))
+    };
+    let mut size = width / 16;
+    if width < 1 {
+        return Err((StatusCode::BAD_REQUEST, String::from("Bad request")));
+    } else if width < 16 {
+        size = 1; 
+    } else if width > 576 {
+        size = 36;
+    }
     let path = match render_type.as_str() {
         "head" => {
             if armored {
@@ -136,18 +147,19 @@ async fn render(
                 format!("{}/armorless/bust/{}.png", config.cache_path, username)
             }
         }
-        _ => {
+        "body" => {
             if armored {
                 format!("{}/armor/body/{}.png", config.cache_path, username)
             } else {
                 format!("{}/armorless/body/{}.png", config.cache_path, username)
             }
         }
+        _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request")))
     };
 
     Render::new(
         String::from(format!("{}/skins/{}", config.cache_path, filename)),
-        6,
+        size.try_into().unwrap(),
     )
     .render_body(render_type, armored)
     .write_image(path.clone());
