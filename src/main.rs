@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::Body,
-    extract,
+    extract::Path,
     http::{StatusCode, header},
     response::{IntoResponse, Json},
     routing::get,
@@ -15,28 +15,25 @@ use tokio_util::io::ReaderStream;
 
 #[tokio::main]
 async fn main() {
-    let f = Config::init().await;
-    print!("{:?}", f);
+    let _ = Config::init().await;
     let config = Config::new();
     let app = Router::new()
         .route(
             "/",
             get(|| async { Json(json!({"commit":env!("GIT_HASH")})) }),
         )
-        .route("/leadership", get(leadership))
-        .route("/leadership/nicked", get(leadership_nicked))
-        .route("/elections", get(elections))
-        .route("/constitution", get(constitution))
-        .route("/member_list", get(member_list))
-        .route("/member_list/nicked", get(member_list_nicked))
-        .route("/news_notice", get(news_notice))
+        .route("/data", get(data))
+        .route("/data{*key_path}", get(data_path))
         .route("/splash", get(splash))
         .route("/propaganda", get(propaganda))
         .route("/online", get(online))
         .route("/ip", get(ip))
         .route("/geoip", get(geoip))
         .route("/nickname/{username}", get(nickname))
-        .route("/render/{armored}/{render_type}/{username}/{width}", get(render));
+        .route(
+            "/render/{armored}/{render_type}/{username}/{width}",
+            get(render),
+        );
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
         .unwrap();
@@ -49,64 +46,31 @@ async fn main() {
     .unwrap();
 }
 
-async fn leadership() -> Json<Value> {
+async fn data() -> Json<Value> {
     let config = Config::new();
-    json_at_key(
-        format!("{}/data.json", config.data_path),
-        String::from("leadership"),
-    )
+    Json(get_value_from_key_path(
+        read_json_from_file(format!("{}/data.json", config.data_path)),
+        vec![],
+    ))
 }
 
-async fn leadership_nicked() -> Json<Value> {
+async fn data_path(Path(key_path): Path<String>) -> Json<Value> {
     let config = Config::new();
-    json_at_key(
-        format!("{}/nick-cache.json", config.data_path),
-        String::from("leadership"),
-    )
-}
-
-async fn elections() -> Json<Value> {
-    let config = Config::new();
-    json_at_key(
-        format!("{}/data.json", config.data_path),
-        String::from("elections"),
-    )
-}
-
-async fn constitution() -> Json<Value> {
-    let config = Config::new();
-    json_at_key(
-        format!("{}/data.json", config.data_path),
-        String::from("constitution"),
-    )
-}
-
-async fn member_list() -> Json<Value> {
-    let config = Config::new();
-    json_at_key(
-        format!("{}/data.json", config.data_path),
-        String::from("member_list"),
-    )
-}
-
-async fn member_list_nicked() -> Json<Value> {
-    let config = Config::new();
-    json_at_key(
-        format!("{}/nick-cache.json", config.data_path),
-        String::from("member_list"),
-    )
-}
-
-async fn news_notice() -> Json<Value> {
-    let config = Config::new();
-    json_at_key(
-        format!("{}/data.json", config.data_path),
-        String::from("news_notice"),
-    )
+    let key_path_decoded: Vec<&str> = key_path.split("/").collect();
+    match key_path_decoded[1] {
+        "nicked" => Json(get_value_from_key_path(
+            read_json_from_file(format!("{}/nick-cache.json", config.data_path)),
+            key_path_decoded[2..].to_vec(),
+        )),
+        _ => Json(get_value_from_key_path(
+            read_json_from_file(format!("{}/data.json", config.data_path)),
+            key_path_decoded,
+        )),
+    }
 }
 
 async fn render(
-    extract::Path((armored, render_type, username, width)): extract::Path<(String, String, String, isize)>,
+    Path((armored, render_type, username, width)): Path<(String, String, String, isize)>,
 ) -> impl IntoResponse {
     let config = Config::new();
 
@@ -122,13 +86,13 @@ async fn render(
     let armored = match armored.as_str() {
         "armored" => true,
         "armorless" => false,
-        _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request")))
+        _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request"))),
     };
     let mut size = width / 16;
     if width < 1 {
         return Err((StatusCode::BAD_REQUEST, String::from("Bad request")));
     } else if width < 16 {
-        size = 1; 
+        size = 1;
     } else if width > 576 {
         size = 36;
     }
@@ -154,11 +118,11 @@ async fn render(
                 format!("{}/armorless/body/{}.png", config.cache_path, username)
             }
         }
-        _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request")))
+        _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request"))),
     };
 
     Render::new(
-        String::from(format!("{}/skins/{}", config.cache_path, filename)),
+        format!("{}/skins/{}", config.cache_path, filename),
         size.try_into().unwrap(),
     )
     .render_body(render_type, armored)
@@ -182,7 +146,7 @@ async fn render(
 
 async fn propaganda() -> Json<Value> {
     let config = Config::new();
-    match dir_to_json(String::from(config.propaganda_path)) {
+    match dir_to_json(&config.propaganda_path) {
         Ok(j) => Json(j),
         Err(e) => Json(json!({"error":e.to_string()})),
     }
@@ -201,7 +165,8 @@ async fn ip(XRealIp(ip): XRealIp) -> Json<Value> {
 }
 
 async fn geoip(XRealIp(ip): XRealIp) -> Json<Value> {
-    match get_geoip_data(ip) {
+    let config = Config::new();
+    match get_geoip_data(ip, config.maxmind_db) {
         Ok(j) => Json(j),
         Err(e) => Json(json!({"error":e.to_string()})),
     }
@@ -209,22 +174,22 @@ async fn geoip(XRealIp(ip): XRealIp) -> Json<Value> {
 
 async fn splash(XRealIp(ip): XRealIp) -> Json<Value> {
     let config = Config::new();
-    let splashes: Vec<Value> = match read_json_from_file(format!("{}/data.json", config.data_path))
-    {
-        Ok(j) => j.get("splashes").unwrap().as_array().unwrap().clone(),
-        Err(e) => vec![json!({"error":e.to_string()})],
-    };
+    let splashes = get_value_from_key_path(
+        read_json_from_file(format!("{}/data.json", config.data_path)),
+        vec!["splashes"],
+    );
+    let splashes_array = splashes.as_array().unwrap();
 
-    let rand_num = random_range(0..splashes.len() + 1);
+    let rand_num = random_range(0..splashes_array.len() + 1);
 
-    if rand_num == splashes.len() {
+    if rand_num == splashes_array.len() {
         return Json(json!({"splash":ip.to_string()}));
     } else {
         return Json(json!({"splash":splashes.get(rand_num).unwrap().as_str()}));
     }
 }
 
-async fn nickname(extract::Path(username): extract::Path<String>) -> Json<Value> {
+async fn nickname(Path(username): Path<String>) -> Json<Value> {
     let config = Config::new();
     match get_nickname(config, &username).await {
         Ok(j) => Json(json!({"nickname":j})),

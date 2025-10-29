@@ -1,4 +1,3 @@
-use axum::response::Json;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use image;
 use magick_rust::{MagickWand, PixelWand, magick_wand_genesis};
@@ -12,8 +11,7 @@ use xdg::BaseDirectories;
 
 static START: Once = Once::new();
 
-#[derive(Deserialize)]
-#[derive(Debug)]
+#[derive(Deserialize, Debug)]
 pub struct Config {
     pub port: u16,
     pub token: String,
@@ -27,7 +25,7 @@ pub struct Config {
 impl Config {
     pub async fn init() -> Result<(), Box<dyn Error>> {
         let error_base64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAdVBMVEUAAAD///+qclmbY0mQWT+PXj6BUzl2SzM/KhUzJBErHg0kGAgmGgo6MYlBNZtGOqUFiIgElZUApKQAr68KvLw3Nzc/Pz9KSkpVVVUAzMyUYD5qQDB3QjVJJRBCHQooKCgAf38AaGg0JRIDenqzeV63g2tSPYnw8BGEAAAAAXRSTlMAQObYZgAAAo5JREFUSA3t1oWOM1cAQ+HPNymlzMx9/ycqV/Qz0eJ1GTKFya642iOy6MjXgwHYaVTOACcOYwugTRsEdSgDQMNgBjIvLkiqKcAlBDStQrnoBpVQYw7MXGKD0qSjKrlwg6CJ9B1cqwPJTiVVRUJaoZE2j1eP0CTaIaSdlaSYxLQmaKuzevL+hx8cn76bzppKlKwfIa1Rx/3M1+QZmZJWGvpk9QiTHB+nHV/ni/bnzGRExRrbInUUX77ry+RIUxrSyOoGIzk9Gpu3s3k/+WCzeXszjk6TAbFOnp465sgbN99peq3NHDMGT+Nk9bEOvIhn7XwHePdaon37IeAB4HV6r8x/uhN3HgOQEP9IJf8oeGxnlRSt1QYVrSVFut8gL2nCTEPMLUbvRl/JxKiSoMSLeIBbgK0CEIaKvHzPy6Ei0kAJoioAg0AA+vrrrbz6UvTnPFGmSnSCqOUGoPI6r99OJPpzvkORFwH5Ld/+q6AVaSaFNlBAgx9I04AurkJISyq3XneLBn7OCaFFtUnVQiAQCW6RqIZbIFSqyHKDIfYIKY0mBBRQEC2AbQUlBYQZUVJBtaSg9tjuPFawAyeBtkkJ1bQKNHRPMLMjRZvoeVPifDP0XIxUzweQghTAVhtUKUVEx2SKdHYzh7RRSdMQV/yfiAN5A2iRcNMVV6zcSC/iNY/dALwW7pBzLNmy5J8/96OtgwXLz710wuUbtKPNQRu8pInSCH0ND5QAt+wz/AOVUIgEoWg5TIAAMCtRlcM2yH6VvLyQJwC6FNAwBSb9AZqmIGfrDRqRIpVKSxV0fYMgARkjEJRILjCigIAC7fqIFRoUUCCFdcHOY1rswCMU6EGC5f8CSAHpqsDyfyENoqJiwY8icHkmoi9YwQAAAABJRU5ErkJggg==";
-        let error: &[u8] = &BASE64_STANDARD.decode(error_base64)?;
+        let error = &BASE64_STANDARD.decode(error_base64)?;
         let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
         let config_path = xdg_dirs
             .place_config_file("config.toml")
@@ -87,7 +85,7 @@ impl Config {
             .place_config_file("config.toml")
             .expect("cannot create configuration directory");
         let content = fs::read_to_string(&config_path).unwrap();
-        let config: Config = toml::from_str(&content).unwrap();
+        let config = toml::from_str(&content).unwrap();
         config
     }
 }
@@ -159,8 +157,8 @@ impl Render {
     }
 
     pub fn render_body(&self, render_type: String, armored: bool) -> &Render {
-        let mut head: bool = false;
-        let mut bust: bool = false;
+        let mut head = false;
+        let mut bust = false;
         let crop: [usize; 4];
 
         let _ = &self.render_body_part([8, 8], [8, 8], [4, 0], false);
@@ -238,18 +236,42 @@ impl Render {
     }
 }
 
-pub fn read_json_from_file(path: String) -> Result<Value, Box<dyn Error>> {
-    let file = fs::read_to_string(path)?;
-    let json_object = serde_json::from_str::<serde_json::Value>(&file)?;
+pub fn read_json_from_file(path: String) -> Value {
+    let file = match fs::read_to_string(path) {
+        Ok(p) => p,
+        Err(e) => return json!({"error":e.to_string()}),
+    };
+    let json_object = match serde_json::from_str(&file) {
+        Ok(j) => j,
+        Err(e) => json!({"error":e.to_string()}),
+    };
 
-    Ok(json!(json_object))
+    json_object
 }
 
-pub fn json_at_key(path: String, key: String) -> Json<Value> {
-    match read_json_from_file(path) {
-        Ok(j) => Json(j.get(key).unwrap().clone()),
-        Err(e) => Json(json!({"error":e.to_string()})),
+pub fn get_value_from_key_path(mut json: Value, key_path: Vec<&str>) -> Value {
+    for key in key_path.into_iter().filter(|s| *s != "") {
+        if let Ok(n) = key.parse::<usize>() {
+            if let Some(j) = json.get(n) {
+                json = j.clone()
+            } else {
+                return json!({"error":"DNE"});
+            }
+        } else {
+            if let Some(j) = json.get(key) {
+                json = j.clone()
+            } else {
+                return json!({"error":"DNE"});
+            }
+        }
     }
+    json
+}
+
+fn _write_json_to_file(json: Value, path: &str) -> Result<(), Box<dyn Error>> {
+    let mut out = fs::File::create(path)?;
+    write!(&mut out, "{}", serde_json::to_string(&json).unwrap())?;
+    Ok(())
 }
 
 pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn Error>> {
@@ -291,11 +313,11 @@ pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn
 pub async fn read_json_from_url(url: String) -> Result<Value, Box<dyn Error>> {
     let resp = reqwest::get(url).await?;
     let text = resp.text().await?;
-    let json_object = serde_json::from_str::<serde_json::Value>(&text)?;
-    Ok(json!(json_object))
+    let json_object = serde_json::from_str(&text)?;
+    Ok(json_object)
 }
 
-pub fn dir_to_json(path: String) -> Result<Value, Box<dyn Error>> {
+pub fn dir_to_json(path: &str) -> Result<Value, Box<dyn Error>> {
     let dir = path::Path::new(&path);
     let mut result = vec![];
     if dir.is_dir() {
@@ -314,7 +336,7 @@ pub fn dir_to_json(path: String) -> Result<Value, Box<dyn Error>> {
     Ok(json!(result))
 }
 
-pub async fn get_nickname(config: Config, username: &String) -> Result<String, Box<dyn Error>> {
+pub async fn get_nickname(config: Config, username: &str) -> Result<String, Box<dyn Error>> {
     let client = reqwest::Client::new();
     let resp = client
         .get(format!(
@@ -328,15 +350,15 @@ pub async fn get_nickname(config: Config, username: &String) -> Result<String, B
         .body(format!("{{\"token\":\"{}\"}}", config.token))
         .send()
         .await?;
-    let json_object = serde_json::from_str::<serde_json::Value>(&resp.text().await?)?;
-    match json!(json_object).get("nickname") {
+    let json_object: Value = serde_json::from_str(&resp.text().await?)?;
+    match json_object.get("nickname") {
         Some(j) => Ok(j.as_str().unwrap_or_else(|| username).to_string()),
-        None => Ok(username.as_str().to_string()),
+        None => Ok(username.to_string()),
     }
 }
 
-pub fn get_geoip_data(ip: IpAddr) -> Result<Value, Box<dyn Error>> {
-    let reader = maxminddb::Reader::open_readfile("/etc/nginx/GeoIP2/GeoLite2-City.mmdb")?;
-    let city = reader.lookup::<geoip2::City>(ip).unwrap().unwrap();
+pub fn get_geoip_data(ip: IpAddr, db: String) -> Result<Value, Box<dyn Error>> {
+    let reader = maxminddb::Reader::open_readfile(db)?;
+    let city: geoip2::City = reader.lookup(ip).unwrap().unwrap();
     Ok(json!(city))
 }
