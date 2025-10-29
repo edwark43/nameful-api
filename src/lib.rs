@@ -5,7 +5,7 @@ use maxminddb::geoip2;
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{boxed::Box, error::Error, fs, io::Write, net::IpAddr, path, sync::Once};
+use std::{boxed::Box, error::Error, fs, io::Write, net::IpAddr, path::PathBuf, sync::Once};
 use toml;
 use xdg::BaseDirectories;
 
@@ -15,10 +15,7 @@ static START: Once = Once::new();
 pub struct Config {
     pub port: u16,
     pub token: String,
-    pub maxmind_db: String,
-    pub propaganda_path: String,
-    pub cache_path: String,
-    pub data_path: String,
+    pub propaganda_path: PathBuf,
     pub online_url: String,
 }
 
@@ -30,60 +27,41 @@ impl Config {
         let config_path = xdg_dirs
             .place_config_file("config.toml")
             .expect("cannot create configuration directory");
-        let cache_path = xdg_dirs
-            .cache_home
-            .clone()
-            .unwrap()
-            .into_os_string()
-            .into_string()
-            .unwrap()
-            + "/nameful-api";
-        let data_path = xdg_dirs
-            .data_home
-            .clone()
-            .unwrap()
-            .into_os_string()
-            .into_string()
-            .unwrap()
-            + "/nameful-api";
+        let maxmind_db_path = xdg_dirs
+            .place_data_file("GeoLite2-City.mmdb")
+            .expect("cannot create maxmind db");
+        let fallback_path = xdg_dirs
+            .place_cache_file("skins/.fallback.png")
+            .expect("cannot create fallback skin");
         if xdg_dirs.find_config_file(&config_path) == None {
             let mut config_file = fs::File::create(&config_path)?;
             write!(
                 &mut config_file,
-                "port = 3568\ntoken = \"\"\nmaxmind_db = \"{}/GeoLite2-City.mmdb\"\npropaganda_path = \"path/to/propaganda\"\ncache_path = \"{}\"\ndata_path = \"{}\"\n\"online_url\" = \"http://127.0.0.1:PORT\"",
-                data_path, cache_path, data_path
+                "port = 3568\ntoken = \"\"\npropaganda_path = \"path/to/propaganda\"\n\"online_url\" = \"http://127.0.0.1:PORT\"",
             )?;
         }
-        let _ = fs::create_dir_all(format!("{}/", data_path));
-        let _ = fs::create_dir_all(format!("{}/armor/head", cache_path));
-        let _ = fs::create_dir_all(format!("{}/armor/bust", cache_path));
-        let _ = fs::create_dir_all(format!("{}/armor/body", cache_path));
-        let _ = fs::create_dir_all(format!("{}/armorless/head", cache_path));
-        let _ = fs::create_dir_all(format!("{}/armorless/bust", cache_path));
-        let _ = fs::create_dir_all(format!("{}/armorless/body", cache_path));
-        let _ = fs::create_dir_all(format!("{}/skins", cache_path));
-        if !fs::exists(format!("{}/GeoLite2-City.mmdb", data_path))? {
+        if xdg_dirs.find_data_file(&maxmind_db_path) == None {
             println!("Downloading MaxMind GeoLite2 DB");
+            let mut db_file = fs::File::create(&maxmind_db_path)?;
             let resp = reqwest::get(
                 "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb",
             )
             .await?;
             let body = resp.bytes().await?;
-            let mut out = fs::File::create(format!("{}/GeoLite2-City.mmdb", data_path))?;
-            let _ = out.write_all(&body);
+            let _ = db_file.write_all(&body);
             println!("Finished Downloading");
         }
-        if !fs::exists(format!("{}/skins/error.png", cache_path))? {
+        if xdg_dirs.find_cache_file(&fallback_path) == None {
             let img = image::load_from_memory(&error)?;
-            let _ = img.save(format!("{}/skins/error.png", cache_path))?;
+            let _ = img.save(&fallback_path)?;
         }
         Ok(())
     }
     pub fn new() -> Config {
         let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
         let config_path = xdg_dirs
-            .place_config_file("config.toml")
-            .expect("cannot create configuration directory");
+            .find_config_file("config.toml")
+            .expect("coudn't find data.json");
         let content = fs::read_to_string(&config_path).unwrap();
         let config = toml::from_str(&content).unwrap();
         config
@@ -91,7 +69,7 @@ impl Config {
 }
 
 pub struct Render {
-    skin_filepath: String,
+    skin_filepath: PathBuf,
     size: usize,
     old: bool,
     skin: MagickWand,
@@ -99,9 +77,9 @@ pub struct Render {
 }
 
 impl Render {
-    pub fn new(skin_filepath: String, size: usize) -> Render {
+    pub fn new(skin_filepath: PathBuf, size: usize) -> Render {
         let skin = MagickWand::new();
-        let _ = skin.read_image(&skin_filepath);
+        let _ = skin.read_image(skin_filepath.to_str().unwrap());
 
         let old = skin.get_image_height() == 32;
 
@@ -130,7 +108,7 @@ impl Render {
             magick_wand_genesis();
         });
 
-        let _ = &self.skin.read_image(&self.skin_filepath);
+        let _ = &self.skin.read_image(&self.skin_filepath.to_str().unwrap());
         let _ = &self.skin.crop_image(
             skin_box_sizes[0],
             skin_box_sizes[1],
@@ -156,14 +134,14 @@ impl Render {
         self
     }
 
-    pub fn render_body(&self, render_type: String, armored: bool) -> &Render {
+    pub fn render_body(&self, render_type: &str, armored: bool) -> &Render {
         let mut head = false;
         let mut bust = false;
         let crop: [usize; 4];
 
         let _ = &self.render_body_part([8, 8], [8, 8], [4, 0], false);
 
-        match render_type.as_str() {
+        match render_type {
             "head" => {
                 head = true;
                 crop = [8 * &self.size, 8 * &self.size, 4 * &self.size, 0]
@@ -230,13 +208,13 @@ impl Render {
         &self
     }
 
-    pub fn write_image(&self, path: String) -> () {
-        let _ = self.render.write_image(&path);
+    pub fn write_image(&self, path: &PathBuf) -> () {
+        let _ = self.render.write_image(path.to_str().unwrap());
         ()
     }
 }
 
-pub fn read_json_from_file(path: String) -> Value {
+pub fn read_json_from_file(path: PathBuf) -> Value {
     let file = match fs::read_to_string(path) {
         Ok(p) => p,
         Err(e) => return json!({"error":e.to_string()}),
@@ -268,24 +246,25 @@ pub fn get_value_from_key_path(mut json: Value, key_path: Vec<&str>) -> Value {
     json
 }
 
-fn _write_json_to_file(json: Value, path: &str) -> Result<(), Box<dyn Error>> {
+fn _write_json_to_file(json: Value, path: PathBuf) -> Result<(), Box<dyn Error>> {
     let mut out = fs::File::create(path)?;
     write!(&mut out, "{}", serde_json::to_string(&json).unwrap())?;
     Ok(())
 }
 
-pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn Error>> {
-    if fs::exists(&path)? {
-        let metadata = fs::metadata(&path)?;
-        if username == "error" {
-            return Err("Username Disallowed".into());
-        }
+pub async fn download_skin(username: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+    let skin_path = xdg_dirs
+        .place_cache_file(format!("skins/{}.png", username))
+        .expect("cannot create skin");
+    if xdg_dirs.find_cache_file(&skin_path) != None {
+        let metadata = fs::metadata(&skin_path)?;
         if let Ok(time) = metadata.created() {
             let difference = time
                 .duration_since(time)
                 .expect("Something went horribly wrong.");
             if difference.as_secs() < 604800 {
-                return Ok(());
+                return Ok(skin_path);
             }
         }
     }
@@ -300,9 +279,9 @@ pub async fn download_skin(username: String, path: String) -> Result<(), Box<dyn
                 return Err("Username Disallowed".into());
             }
             let body = resp.bytes().await?;
-            let mut out = fs::File::create(&path)?;
+            let mut out = fs::File::create(&skin_path)?;
             let _ = out.write_all(&body);
-            Ok(())
+            Ok(skin_path)
         }
         Err(err) => {
             return Err(Box::new(err));
@@ -317,11 +296,10 @@ pub async fn read_json_from_url(url: String) -> Result<Value, Box<dyn Error>> {
     Ok(json_object)
 }
 
-pub fn dir_to_json(path: &str) -> Result<Value, Box<dyn Error>> {
-    let dir = path::Path::new(&path);
+pub fn dir_to_json(path: PathBuf) -> Result<Value, Box<dyn Error>> {
     let mut result = vec![];
-    if dir.is_dir() {
-        for file in fs::read_dir(dir)? {
+    if path.is_dir() {
+        for file in fs::read_dir(path)? {
             let file = file?;
             let full_path = file.path();
 
@@ -357,7 +335,7 @@ pub async fn get_nickname(config: Config, username: &str) -> Result<String, Box<
     }
 }
 
-pub fn get_geoip_data(ip: IpAddr, db: String) -> Result<Value, Box<dyn Error>> {
+pub fn get_geoip_data(ip: IpAddr, db: PathBuf) -> Result<Value, Box<dyn Error>> {
     let reader = maxminddb::Reader::open_readfile(db)?;
     let city: geoip2::City = reader.lookup(ip).unwrap().unwrap();
     Ok(json!(city))

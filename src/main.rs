@@ -12,6 +12,7 @@ use rand::random_range;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use tokio_util::io::ReaderStream;
+use xdg::BaseDirectories;
 
 #[tokio::main]
 async fn main() {
@@ -47,23 +48,28 @@ async fn main() {
 }
 
 async fn data() -> Json<Value> {
-    let config = Config::new();
-    Json(get_value_from_key_path(
-        read_json_from_file(format!("{}/data.json", config.data_path)),
-        vec![],
-    ))
+    let data = BaseDirectories::with_prefix("nameful-api")
+        .find_data_file("data.json")
+        .expect("couldn't find data.json");
+    Json(get_value_from_key_path(read_json_from_file(data), vec![]))
 }
 
 async fn data_path(Path(key_path): Path<String>) -> Json<Value> {
-    let config = Config::new();
     let key_path_decoded: Vec<&str> = key_path.split("/").collect();
+    let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+    let data = xdg_dirs
+        .find_data_file("data.json")
+        .expect("coudn't find data.json");
+    let nick = xdg_dirs
+        .find_data_file("nick-cache.json")
+        .expect("couldn't find data.json");
     match key_path_decoded[1] {
         "nicked" => Json(get_value_from_key_path(
-            read_json_from_file(format!("{}/nick-cache.json", config.data_path)),
+            read_json_from_file(nick),
             key_path_decoded[2..].to_vec(),
         )),
         _ => Json(get_value_from_key_path(
-            read_json_from_file(format!("{}/data.json", config.data_path)),
+            read_json_from_file(data),
             key_path_decoded,
         )),
     }
@@ -72,20 +78,14 @@ async fn data_path(Path(key_path): Path<String>) -> Json<Value> {
 async fn render(
     Path((armored, render_type, username, width)): Path<(String, String, String, isize)>,
 ) -> impl IntoResponse {
-    let config = Config::new();
-
-    let filename = match download_skin(
-        username.clone(),
-        format!("{}/skins/{}.png", config.cache_path, username),
-    )
-    .await
-    {
-        Ok(..) => format!("{}.png", username),
-        Err(..) => String::from("error.png"),
+    let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+    let skin_path = match download_skin(&username).await {
+        Ok(p) => p,
+        Err(..) => xdg_dirs.find_cache_file("skins/.fallback.png").unwrap(),
     };
     let armored = match armored.as_str() {
-        "armored" => true,
-        "armorless" => false,
+        "armored" => "armored",
+        "armorless" => "armorless",
         _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request"))),
     };
     let mut size = width / 16;
@@ -96,39 +96,21 @@ async fn render(
     } else if width > 576 {
         size = 36;
     }
-    let path = match render_type.as_str() {
-        "head" => {
-            if armored {
-                format!("{}/armor/head/{}.png", config.cache_path, username)
-            } else {
-                format!("{}/armorless/head/{}.png", config.cache_path, username)
-            }
-        }
-        "bust" => {
-            if armored {
-                format!("{}/armor/bust/{}.png", config.cache_path, username)
-            } else {
-                format!("{}/armorless/bust/{}.png", config.cache_path, username)
-            }
-        }
-        "body" => {
-            if armored {
-                format!("{}/armor/body/{}.png", config.cache_path, username)
-            } else {
-                format!("{}/armorless/body/{}.png", config.cache_path, username)
-            }
-        }
+    let render_type = match render_type.as_str() {
+        "head" => "head",
+        "bust" => "bust",
+        "body" => "body",
         _ => return Err((StatusCode::BAD_REQUEST, String::from("Bad request"))),
     };
+    let render_path = xdg_dirs
+        .place_cache_file(format!("{}/{}/{}.png", armored, render_type, username))
+        .expect("cannot create skin");
 
-    Render::new(
-        format!("{}/skins/{}", config.cache_path, filename),
-        size.try_into().unwrap(),
-    )
-    .render_body(render_type, armored)
-    .write_image(path.clone());
+    Render::new(skin_path, size.try_into().unwrap())
+        .render_body(render_type, armored == "armored")
+        .write_image(&render_path);
 
-    let file = match tokio::fs::File::open(&path).await {
+    let file = match tokio::fs::File::open(render_path).await {
         Ok(file) => file,
         Err(err) => return Err((StatusCode::NOT_FOUND, format!("File not found: {}", err))),
     };
@@ -146,7 +128,7 @@ async fn render(
 
 async fn propaganda() -> Json<Value> {
     let config = Config::new();
-    match dir_to_json(&config.propaganda_path) {
+    match dir_to_json(config.propaganda_path) {
         Ok(j) => Json(j),
         Err(e) => Json(json!({"error":e.to_string()})),
     }
@@ -165,19 +147,22 @@ async fn ip(XRealIp(ip): XRealIp) -> Json<Value> {
 }
 
 async fn geoip(XRealIp(ip): XRealIp) -> Json<Value> {
-    let config = Config::new();
-    match get_geoip_data(ip, config.maxmind_db) {
+    let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+    let db_path = xdg_dirs
+        .find_data_file("GeoLite2-City.mmdb")
+        .expect("couldn't find mmdb file");
+    match get_geoip_data(ip, db_path) {
         Ok(j) => Json(j),
         Err(e) => Json(json!({"error":e.to_string()})),
     }
 }
 
 async fn splash(XRealIp(ip): XRealIp) -> Json<Value> {
-    let config = Config::new();
-    let splashes = get_value_from_key_path(
-        read_json_from_file(format!("{}/data.json", config.data_path)),
-        vec!["splashes"],
-    );
+    let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+    let data = xdg_dirs
+        .find_data_file("data.json")
+        .expect("coudn't find data.json");
+    let splashes = get_value_from_key_path(read_json_from_file(data), vec!["splashes"]);
     let splashes_array = splashes.as_array().unwrap();
 
     let rand_num = random_range(0..splashes_array.len() + 1);
