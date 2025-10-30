@@ -227,23 +227,24 @@ pub fn read_json_from_file(path: PathBuf) -> Value {
     json_object
 }
 
-pub fn get_value_from_key_path(mut json: Value, key_path: Vec<&str>) -> Value {
+pub fn get_value_from_key_path(json: Value, key_path: Vec<&str>) -> Value {
+    let mut value: &Value = &json;
     for key in key_path.into_iter().filter(|s| *s != "") {
         if let Ok(n) = key.parse::<usize>() {
-            if let Some(j) = json.get(n) {
-                json = j.clone()
+            if let Some(j) = value.get(n) {
+                value = j
             } else {
                 return json!({"error":"DNE"});
             }
         } else {
-            if let Some(j) = json.get(key) {
-                json = j.clone()
+            if let Some(j) = value.get(key) {
+                value = j
             } else {
                 return json!({"error":"DNE"});
             }
         }
     }
-    json
+    value.clone()
 }
 
 fn _write_json_to_file(json: Value, path: PathBuf) -> Result<(), Box<dyn Error>> {
