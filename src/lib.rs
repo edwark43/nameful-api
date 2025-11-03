@@ -1,11 +1,19 @@
+use api_key::{
+    self,
+    types::{ApiKeyResults, Default, StringGenerator},
+};
 use base64::{Engine, prelude::BASE64_STANDARD};
+use chrono::{DateTime, Utc};
 use image;
 use magick_rust::{MagickWand, PixelWand, magick_wand_genesis};
 use maxminddb::geoip2;
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{boxed::Box, error::Error, fs, io::Write, net::IpAddr, path::PathBuf, sync::Once};
+use std::{
+    boxed::Box, error::Error, fs, io::Write, net::IpAddr, path::PathBuf, sync::Once,
+    time::SystemTime,
+};
 use toml;
 use xdg::BaseDirectories;
 
@@ -13,8 +21,9 @@ static START: Once = Once::new();
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
+    pub api_key: String,
     pub port: u16,
-    pub token: String,
+    pub osm_token: String,
     pub propaganda_path: PathBuf,
     pub online_url: String,
 }
@@ -23,6 +32,15 @@ impl Config {
     pub async fn init() -> Result<(), Box<dyn Error>> {
         let error_base64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAdVBMVEUAAAD///+qclmbY0mQWT+PXj6BUzl2SzM/KhUzJBErHg0kGAgmGgo6MYlBNZtGOqUFiIgElZUApKQAr68KvLw3Nzc/Pz9KSkpVVVUAzMyUYD5qQDB3QjVJJRBCHQooKCgAf38AaGg0JRIDenqzeV63g2tSPYnw8BGEAAAAAXRSTlMAQObYZgAAAo5JREFUSA3t1oWOM1cAQ+HPNymlzMx9/ycqV/Qz0eJ1GTKFya642iOy6MjXgwHYaVTOACcOYwugTRsEdSgDQMNgBjIvLkiqKcAlBDStQrnoBpVQYw7MXGKD0qSjKrlwg6CJ9B1cqwPJTiVVRUJaoZE2j1eP0CTaIaSdlaSYxLQmaKuzevL+hx8cn76bzppKlKwfIa1Rx/3M1+QZmZJWGvpk9QiTHB+nHV/ni/bnzGRExRrbInUUX77ry+RIUxrSyOoGIzk9Gpu3s3k/+WCzeXszjk6TAbFOnp465sgbN99peq3NHDMGT+Nk9bEOvIhn7XwHePdaon37IeAB4HV6r8x/uhN3HgOQEP9IJf8oeGxnlRSt1QYVrSVFut8gL2nCTEPMLUbvRl/JxKiSoMSLeIBbgK0CEIaKvHzPy6Ei0kAJoioAg0AA+vrrrbz6UvTnPFGmSnSCqOUGoPI6r99OJPpzvkORFwH5Ld/+q6AVaSaFNlBAgx9I04AurkJISyq3XneLBn7OCaFFtUnVQiAQCW6RqIZbIFSqyHKDIfYIKY0mBBRQEC2AbQUlBYQZUVJBtaSg9tjuPFawAyeBtkkJ1bQKNHRPMLMjRZvoeVPifDP0XIxUzweQghTAVhtUKUVEx2SKdHYzh7RRSdMQV/yfiAN5A2iRcNMVV6zcSC/iNY/dALwW7pBzLNmy5J8/96OtgwXLz710wuUbtKPNQRu8pInSCH0ND5QAt+wz/AOVUIgEoWg5TIAAMCtRlcM2yH6VvLyQJwC6FNAwBSb9AZqmIGfrDRqRIpVKSxV0fYMgARkjEJRILjCigIAC7fqIFRoUUCCFdcHOY1rswCMU6EGC5f8CSAHpqsDyfyENoqJiwY8icHkmoi9YwQAAAABJRU5ErkJggg==";
         let error = &BASE64_STANDARD.decode(error_base64)?;
+        let options = StringGenerator {
+            length: 24,
+            prefix: String::from("nmfl"),
+            ..StringGenerator::default()
+        };
+        let key: String = match api_key::string(options) {
+            ApiKeyResults::String(s) => s,
+            _ => String::from(""),
+        };
         let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
         let config_path = xdg_dirs
             .place_config_file("config.toml")
@@ -37,7 +55,8 @@ impl Config {
             let mut config_file = fs::File::create(&config_path)?;
             write!(
                 &mut config_file,
-                "port = 3568\ntoken = \"\"\npropaganda_path = \"path/to/propaganda\"\n\"online_url\" = \"http://127.0.0.1:PORT\"",
+                "api_key = \"{}\"\nport = 3568\nosm_token = \"\"\npropaganda_path = \"path/to/propaganda\"\n\"online_url\" = \"http://127.0.0.1:PORT\"",
+                key
             )?;
         }
         if xdg_dirs.find_data_file(&maxmind_db_path) == None {
@@ -214,8 +233,8 @@ impl Render {
     }
 }
 
-pub fn read_json_from_file(path: PathBuf) -> Value {
-    let file = match fs::read_to_string(path) {
+pub fn read_json_from_file(path: &PathBuf) -> Value {
+    let file = match fs::read_to_string(&path) {
         Ok(p) => p,
         Err(e) => return json!({"error":e.to_string()}),
     };
@@ -227,29 +246,19 @@ pub fn read_json_from_file(path: PathBuf) -> Value {
     json_object
 }
 
-pub fn get_value_from_key_path(json: Value, key_path: Vec<&str>) -> Value {
-    let mut value: &Value = &json;
-    for key in key_path.into_iter().filter(|s| *s != "") {
-        if let Ok(n) = key.parse::<usize>() {
-            if let Some(j) = value.get(n) {
-                value = j
-            } else {
-                return json!({"error":"DNE"});
-            }
-        } else {
-            if let Some(j) = value.get(key) {
-                value = j
-            } else {
-                return json!({"error":"DNE"});
-            }
-        }
-    }
-    value.clone()
+pub fn write_json_to_file(json: &mut Value, path: &PathBuf) -> Result<(), Box<dyn Error>> {
+    let mut out = fs::File::create(&path)?;
+    write!(&mut out, "{}", serde_json::to_string(&json).unwrap())?;
+    Ok(())
 }
 
-fn _write_json_to_file(json: Value, path: PathBuf) -> Result<(), Box<dyn Error>> {
-    let mut out = fs::File::create(path)?;
-    write!(&mut out, "{}", serde_json::to_string(&json).unwrap())?;
+pub fn backup(json: &mut Value) -> Result<(), Box<dyn Error>> {
+    let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+    let now: DateTime<Utc> = SystemTime::now().try_into().unwrap();
+    let data_backup = xdg_dirs
+        .place_data_file(format!("data-{}.json", now.format("%s")))
+        .expect("cannot create backup json");
+    write_json_to_file(json, &data_backup)?;
     Ok(())
 }
 
@@ -326,7 +335,7 @@ pub async fn get_nickname(config: Config, username: &str) -> Result<String, Box<
             HeaderName::from_lowercase(b"content-type").unwrap(),
             HeaderValue::from_str("application/json").unwrap(),
         )
-        .body(format!("{{\"token\":\"{}\"}}", config.token))
+        .body(format!("{{\"token\":\"{}\"}}", config.osm_token))
         .send()
         .await?;
     let json_object: Value = serde_json::from_str(&resp.text().await?)?;
@@ -338,6 +347,9 @@ pub async fn get_nickname(config: Config, username: &str) -> Result<String, Box<
 
 pub fn get_geoip_data(ip: IpAddr, db: PathBuf) -> Result<Value, Box<dyn Error>> {
     let reader = maxminddb::Reader::open_readfile(db)?;
-    let city: geoip2::City = reader.lookup(ip).unwrap().unwrap();
+    let city: geoip2::City = match reader.lookup(ip).unwrap() {
+        Some(j) => j,
+        None => return Ok(json!({"error":"Invalid"})),
+    };
     Ok(json!(city))
 }
