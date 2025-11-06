@@ -264,9 +264,11 @@ async fn propaganda() -> Result<Json<Value>, StatusCode> {
 }
 
 async fn online() -> Result<Json<Value>, StatusCode> {
-    let config = Config::new();
-    match read_json_from_url(config.online_url).await {
-        Ok(j) => Ok(Json(j)),
+    match fetch_osm_info() {
+        Ok(j) => Ok(Json(match j.pointer("/players") {
+            Some(j) => j.clone(),
+            None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        })),
         Err(e) => {
             eprintln!("{}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)

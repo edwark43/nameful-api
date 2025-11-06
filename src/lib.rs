@@ -11,7 +11,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    boxed::Box, error::Error, fs, io::Write, net::IpAddr, path::PathBuf, sync::Once,
+    boxed::Box, error::Error, fs, io::{Write, Read}, net::{IpAddr,TcpStream}, path::PathBuf, sync::Once,
     time::SystemTime,
 };
 use toml;
@@ -25,7 +25,6 @@ pub struct Config {
     pub port: u16,
     pub osm_token: String,
     pub propaganda_path: PathBuf,
-    pub online_url: String,
 }
 
 impl Config {
@@ -55,7 +54,7 @@ impl Config {
             let mut config_file = fs::File::create(&config_path)?;
             write!(
                 &mut config_file,
-                "api_key = \"{}\"\nport = 3568\nosm_token = \"\"\npropaganda_path = \"path/to/propaganda\"\n\"online_url\" = \"http://127.0.0.1:PORT\"",
+                "api_key = \"{}\"\nport = 3568\nosm_token = \"\"\npropaganda_path = \"path/to/propaganda\"",
                 key
             )?;
         }
@@ -262,6 +261,29 @@ pub fn backup(json: &mut Value) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+pub fn fetch_osm_info() -> Result<Value, Box<dyn Error>> {
+    let mut message_length: usize = 0;
+    let mut header_read = false;
+    let mut stream = TcpStream::connect("os-mc.net:8283")?;
+    let mut buffer = Vec::new();
+    let header: [u8; 4];
+    stream.read_to_end(&mut buffer)?;
+
+    if buffer.len() >= 4 {
+        header_read = true;
+        header = buffer[0..4].try_into()?;
+        message_length = u32::from_be_bytes(header).try_into()?;
+    }
+
+    if header_read && message_length != 0 && buffer.len() >= message_length * 2 + 8 {
+        let data_str = String::from_utf8(buffer[4..4 + message_length * 2].to_vec())?;
+        let data_json: Value = serde_json::from_str(&data_str.replace(" ", ""))?;
+        Ok(data_json)
+    } else {
+        Err(Box::from("Invalid Response"))
+    }
+}
+
 pub async fn download_skin(username: &str) -> Result<PathBuf, Box<dyn Error>> {
     let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
     let skin_path = xdg_dirs
@@ -297,13 +319,6 @@ pub async fn download_skin(username: &str) -> Result<PathBuf, Box<dyn Error>> {
             return Err(Box::new(err));
         }
     }
-}
-
-pub async fn read_json_from_url(url: String) -> Result<Value, Box<dyn Error>> {
-    let resp = reqwest::get(url).await?;
-    let text = resp.text().await?;
-    let json_object = serde_json::from_str(&text)?;
-    Ok(json_object)
 }
 
 pub fn dir_to_json(path: PathBuf) -> Result<Value, Box<dyn Error>> {
