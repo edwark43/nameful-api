@@ -19,7 +19,7 @@ use xdg::BaseDirectories;
 
 static START: Once = Once::new();
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct Config {
     pub api_key: String,
     pub port: u16,
@@ -339,7 +339,7 @@ pub fn dir_to_json(path: PathBuf) -> Result<Value, Box<dyn Error>> {
     Ok(json!(result))
 }
 
-pub async fn get_nickname(config: Config, username: &str) -> Result<String, Box<dyn Error>> {
+pub async fn get_nickname(config: &Config, username: &str) -> Result<String, Box<dyn Error>> {
     let client = reqwest::Client::new();
     let resp = client
         .get(format!(
@@ -358,6 +358,66 @@ pub async fn get_nickname(config: Config, username: &str) -> Result<String, Box<
         Some(j) => Ok(j.as_str().unwrap_or_else(|| username).to_string()),
         None => Ok(username.to_string()),
     }
+}
+
+pub async fn cache_nicks() -> Result<(), Box<dyn Error>> {
+    let config = Config::new(); 
+    let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
+    let Some(data) = xdg_dirs.find_data_file("data.json") else {
+        return Err(Box::from("Error caching nicknames"))
+    };
+    let nick = match xdg_dirs.find_data_file("nick-cache.json") {
+        Some(d) => d,
+        None => xdg_dirs.place_data_file("nick-cache.json")?
+    };
+    let json = read_json_from_file(&data);
+
+    let leaders: &Vec<Value> = {
+        let Some(leaders) = json.pointer("/leadership") else {
+            return Err(Box::from("Error caching nicknames"))
+        };
+        let Some(leaders_array) = leaders.as_array() else {
+            return Err(Box::from("Error caching nicknames"))
+        };
+        leaders_array
+    };
+    let members: &Vec<Value> = {
+        let Some(members) = json.pointer("/member_list") else {
+            return Err(Box::from("Error caching nicknames"))
+        };
+        let Some(members_array) = members.as_array() else {
+            return Err(Box::from("Error caching nicknames"))
+        };
+        members_array
+    };
+
+    let mut leaders_vec = Vec::new();
+    for leader in leaders {
+        let Some(title) = leader["title"].as_str() else {
+            return Err(Box::from("Error caching nicknames"))
+        };
+        let Some(username) = leader["username"].as_str() else {
+            return Err(Box::from("Error caching nicknames"))
+        };
+        leaders_vec.push(match get_nickname(&config, username).await {
+            Ok(n) => json!({"title":title,"nickname":n,"username":username}),
+            Err(..) => json!({"title":title,"nickname":username,"username":username}),
+        });
+    }
+
+    let mut members_vec = Vec::new();
+    for member in members {
+        let Some(username) = member["username"].as_str() else {
+            return Err(Box::from("Error caching nicknames"))
+        };
+        members_vec.push(match get_nickname(&config, username).await {
+            Ok(n) => json!({"username":n}),
+            Err(..) => json!({"username":username}),
+        });
+    }
+
+    write_json_to_file(&mut json!({"leadership":leaders_vec,"member_list":members_vec}), &nick)?;
+    Ok(())
 }
 
 pub fn get_geoip_data(ip: IpAddr, db: PathBuf) -> Result<Value, Box<dyn Error>> {

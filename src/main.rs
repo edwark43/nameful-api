@@ -12,14 +12,25 @@ use json_value_remove::Remove;
 use nameful_api::*;
 use rand::random_range;
 use serde_json::{Value, json};
-use std::net::{IpAddr, SocketAddr};
+use std::{time::Duration, net::{IpAddr, SocketAddr}};
 use tokio_util::io::ReaderStream;
 use xdg::BaseDirectories;
+use clokwerk::{AsyncScheduler, TimeUnits};
 
 #[tokio::main]
 async fn main() {
-    let _ = Config::init().await;
-    let config = Config::new();
+    Config::init().await.expect("couldn't initialize config");
+    let config = Config::new(); 
+    let mut scheduler = AsyncScheduler::new();
+    scheduler.every(6.hours()).run(async || if let Err(e) = cache_nicks().await {
+       println!("Caching Error: {}", e)
+    });
+    tokio::spawn(async move {
+      loop {
+        scheduler.run_pending().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+      }
+    });
     let get_routes = Router::new()
         .route(
             "/",
@@ -345,7 +356,7 @@ async fn splash(XRealIp(ip): XRealIp) -> Result<Json<Value>, StatusCode> {
 
 async fn nickname(Path(username): Path<String>) -> Json<Value> {
     let config = Config::new();
-    match get_nickname(config, &username).await {
+    match get_nickname(&config, &username).await {
         Ok(j) => Json(json!({"nickname":j})),
         Err(..) => Json(json!({"nickname":username})),
     }
