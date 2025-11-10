@@ -8,28 +8,42 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use axum_client_ip::XRealIp;
+use clokwerk::{AsyncScheduler, TimeUnits};
 use json_value_remove::Remove;
 use nameful_api::*;
 use rand::random_range;
 use serde_json::{Value, json};
-use std::{time::Duration, net::{IpAddr, SocketAddr}};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 use tokio_util::io::ReaderStream;
 use xdg::BaseDirectories;
-use clokwerk::{AsyncScheduler, TimeUnits};
 
 #[tokio::main]
 async fn main() {
-    Config::init().await.expect("couldn't initialize config");
-    let config = Config::new(); 
+    if let Err(e) = Config::init().await {
+        eprintln!("API Crashed due to: {e}");
+        return
+    }
+    let config = match Config::new() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("API Crashed due to: {e}");
+            return
+        }
+    };
     let mut scheduler = AsyncScheduler::new();
-    scheduler.every(6.hours()).run(async || if let Err(e) = cache_nicks().await {
-       println!("Caching Error: {}", e)
+    scheduler.every(6.hours()).run(async || {
+        if let Err(e) = cache_nicks().await {
+            println!("Caching Error: {}", e)
+        }
     });
     tokio::spawn(async move {
-      loop {
-        scheduler.run_pending().await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-      }
+        loop {
+            scheduler.run_pending().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     });
     let get_routes = Router::new()
         .route(
@@ -62,20 +76,31 @@ async fn main() {
         .merge(put_routes)
         .merge(post_routes)
         .merge(delete_routes);
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
-        .await
-        .unwrap();
+    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
+        .await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("API Crashed due to: {e}");
+                return
+            }
+        };
 
-    axum::serve(
+    if let Err(e) = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await
-    .unwrap();
+    .await {
+        eprintln!("API Crashed due to: {e}");
+        return
+    }
+    println!("API successfully started");
 }
 
 async fn auth(req: Request, next: Next) -> Result<Response, StatusCode> {
-    let config = Config::new();
+    let config = Config::new().map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let headers = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -96,7 +121,10 @@ async fn data() -> Result<Json<Value>, StatusCode> {
     let data = BaseDirectories::with_prefix("nameful-api")
         .find_data_file("data.json")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(Json(read_json_from_file(&data)))
+    Ok(Json(read_json_from_file(&data).map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?))
 }
 
 async fn data_path(Path(key_path): Path<String>) -> Result<Json<Value>, StatusCode> {
@@ -108,20 +136,32 @@ async fn data_path(Path(key_path): Path<String>) -> Result<Json<Value>, StatusCo
         .find_data_file("nick-cache.json")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     if key_path.len() < 7 {
-        return match read_json_from_file(&data).pointer(&key_path) {
-            Some(j) => Ok(Json(j.clone())),
-            None => Err(StatusCode::NOT_FOUND),
-        };
+        return read_json_from_file(&data)
+            .map_err(|e| {
+                eprintln!("{}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .pointer(&key_path)
+            .ok_or(StatusCode::NOT_FOUND)
+            .map(|j| Json(j.clone()));
     }
     match &key_path[1..7] {
-        "nicked" => match read_json_from_file(&nick).pointer(&key_path[7..]) {
-            Some(j) => Ok(Json(j.clone())),
-            None => Err(StatusCode::NOT_FOUND),
-        },
-        _ => match read_json_from_file(&data).pointer(&key_path) {
-            Some(j) => Ok(Json(j.clone())),
-            None => Err(StatusCode::NOT_FOUND),
-        },
+        "nicked" => read_json_from_file(&nick)
+            .map_err(|e| {
+                eprintln!("{}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .pointer(&key_path[7..])
+            .ok_or(StatusCode::NOT_FOUND)
+            .map(|j| Json(j.clone())),
+        _ => read_json_from_file(&data)
+            .map_err(|e| {
+                eprintln!("{}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .pointer(&key_path)
+            .ok_or(StatusCode::NOT_FOUND)
+            .map(|j| Json(j.clone())),
     }
 }
 
@@ -133,20 +173,22 @@ async fn edit_data_path(
     let data = xdg_dirs
         .find_data_file("data.json")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let json = &mut read_json_from_file(&data);
+    let json = &mut read_json_from_file(&data).map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     if let Err(e) = backup(json) {
         eprintln!("{}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
     let value: &mut Value = json.pointer_mut(&key_path).ok_or(StatusCode::NOT_FOUND)?;
     *value = body;
-    match write_json_to_file(json, &data) {
-        Ok(s) => Ok(Json(json!({"success":s}))),
-        Err(e) => {
+    write_json_to_file(json, &data)
+        .map_err(|e| {
             eprintln!("{}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .map(|s| Json(json!({"success":s})))
 }
 
 async fn add_data_path(
@@ -156,7 +198,10 @@ async fn add_data_path(
     let data = BaseDirectories::with_prefix("nameful-api")
         .find_data_file("data.json")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let json = &mut read_json_from_file(&data);
+    let json = &mut read_json_from_file(&data).map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     if let Err(e) = backup(json) {
         eprintln!("{}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -170,44 +215,52 @@ async fn add_data_path(
     } else {
         return Err(StatusCode::BAD_REQUEST);
     }
-    match write_json_to_file(json, &data) {
-        Ok(s) => Ok(Json(json!({"success":s}))),
-        Err(e) => {
+    write_json_to_file(json, &data)
+        .map_err(|e| {
             eprintln!("{}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .map(|s| Json(json!({"success":s})))
 }
 
 async fn delete_data_path(Path(key_path): Path<String>) -> Result<Json<Value>, StatusCode> {
     let data = BaseDirectories::with_prefix("nameful-api")
         .find_data_file("data.json")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let json = &mut read_json_from_file(&data);
+    let json = &mut read_json_from_file(&data).map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     if let Err(e) = backup(json) {
         eprintln!("{}", e);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
     if let None = json.remove(&key_path).unwrap_or_else(|e| {
-            eprintln!("{}", e);
-            None
-        }) {
+        eprintln!("{}", e);
+        None
+    }) {
         return Err(StatusCode::NOT_FOUND);
     }
-    match write_json_to_file(json, &data) {
-        Ok(s) => Ok(Json(json!({"success":s}))),
-        Err(e) => {
+    write_json_to_file(json, &data)
+        .map_err(|e| {
             eprintln!("{}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .map(|s| Json(json!({"success":s})))
 }
 
 async fn render(
     Path((armored, render_type, username, width)): Path<(String, String, String, isize)>,
 ) -> impl IntoResponse {
     let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
-    let skin_path = download_skin(&username).await.unwrap_or(xdg_dirs.find_cache_file("skins/.fallback.png").ok_or(StatusCode::INTERNAL_SERVER_ERROR)?);
+    let skin_path = download_skin(&username).await.unwrap_or(
+        xdg_dirs
+            .find_cache_file("skins/.fallback.png")
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+            .to_str()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+            .to_string(),
+    );
     let armored = match armored.as_str() {
         "armored" => "armored",
         "armorless" => "armorless",
@@ -229,28 +282,40 @@ async fn render(
     };
     let render_path = xdg_dirs
         .place_cache_file(format!("{}/{}/{}.png", armored, render_type, username))
-        .expect("cannot create skin");
+        .map_err(|e| {
+            eprintln!("{}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+            .to_str()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+            .to_string();
 
     Render::new(
         skin_path,
-        match size.try_into() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("{}", e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        },
-    )
-    .render_body(render_type, armored == "armored")
-    .write_image(&render_path);
-
-    let file = match tokio::fs::File::open(render_path).await {
-        Ok(f) => f,
-        Err(e) => {
+        size.try_into().map_err(|e| {
             eprintln!("{}", e);
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?,
+    )
+    .map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .render_body(render_type, armored == "armored")
+    .map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .write_image(&render_path)
+    .map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let file = tokio::fs::File::open(&render_path).await.map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::NOT_FOUND
+    })?;
 
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
@@ -264,27 +329,31 @@ async fn render(
 }
 
 async fn propaganda() -> Result<Json<Value>, StatusCode> {
-    let config = Config::new();
-    match dir_to_json(config.propaganda_path) {
-        Ok(j) => Ok(Json(j)),
-        Err(e) => {
+    let config = Config::new().map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    dir_to_json(config.propaganda_path)
+        .map_err(|e| {
             eprintln!("{}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .map(|j| Json(j))
 }
 
 async fn online() -> Result<Json<Value>, StatusCode> {
-    match fetch_osm_info() {
-        Ok(j) => Ok(Json(match j.pointer("/players") {
-            Some(j) => j.clone(),
-            None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-        })),
-        Err(e) => {
+    fetch_osm_info()
+        .map_err(|e| {
             eprintln!("{}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .map(|j| {
+            j.pointer("/players")
+                .map(|j| j.clone())
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
+        })
+        .flatten()
+        .map(|j| Json(j))
 }
 
 async fn ip(XRealIp(ip): XRealIp) -> Json<Value> {
@@ -296,13 +365,12 @@ async fn geoip(XRealIp(ip): XRealIp) -> Result<Json<Value>, StatusCode> {
     let db_path = xdg_dirs
         .find_data_file("GeoLite2-City.mmdb")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    match get_geoip_data(ip, db_path) {
-        Ok(j) => Ok(Json(j)),
-        Err(e) => {
+    get_geoip_data(ip, db_path)
+        .map_err(|e| {
             eprintln!("{}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .map(|j| Json(j))
 }
 
 async fn geoip_with_ip(Path(ip): Path<String>) -> Result<Json<Value>, StatusCode> {
@@ -310,20 +378,16 @@ async fn geoip_with_ip(Path(ip): Path<String>) -> Result<Json<Value>, StatusCode
     let db_path = xdg_dirs
         .find_data_file("GeoLite2-City.mmdb")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let ip: IpAddr = match (ip).parse() {
-        Ok(i) => i,
-        Err(e) => {
+    let ip: IpAddr = ip.parse().map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    get_geoip_data(ip, db_path)
+        .map_err(|e| {
             eprintln!("{}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
-    match get_geoip_data(ip, db_path) {
-        Ok(j) => Ok(Json(j)),
-        Err(e) => {
-            eprintln!("{}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+        .map(|j| Json(j))
 }
 
 async fn splash(XRealIp(ip): XRealIp) -> Result<Json<Value>, StatusCode> {
@@ -331,33 +395,33 @@ async fn splash(XRealIp(ip): XRealIp) -> Result<Json<Value>, StatusCode> {
     let data = xdg_dirs
         .find_data_file("data.json")
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let json = read_json_from_file(&data);
-    let splashes = match json.pointer("/splashes") {
-        Some(j) => j,
-        None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
+    let json = read_json_from_file(&data).map_err(|e| {
+        eprintln!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let splashes = json
+        .pointer("/splashes")
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let splashes_array = match splashes.as_array() {
-        Some(a) => a,
-        None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
-    };
+    let splashes_array = splashes
+        .as_array()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let rand_num = random_range(0..splashes_array.len() + 1);
 
-    if rand_num == splashes_array.len() {
-        return Ok(Json(json!({"splash":ip.to_string()})));
-    } else {
-        return Ok(Json(json!({"splash":match splashes.get(rand_num) {
-            Some(s) => s.as_str(),
-            None => {return Err(StatusCode::INTERNAL_SERVER_ERROR)},
-        }})));
-    }
+    Ok(Json(match rand_num {
+        len if len == splashes_array.len() => json!({"splash":ip.to_string()}),
+        _ => json!({"splash":splashes.get(rand_num).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?}),
+    }))
 }
 
-async fn nickname(Path(username): Path<String>) -> Json<Value> {
-    let config = Config::new();
-    match get_nickname(&config, &username).await {
-        Ok(j) => Json(json!({"nickname":j})),
-        Err(..) => Json(json!({"nickname":username})),
-    }
+async fn nickname(Path(username): Path<String>) -> Result<Json<Value>, Json<Value>> {
+    let config = Config::new().map_err(|e| {
+        eprintln!("{}", e);
+        Json(json!({"nickname":username}))
+    })?;
+    get_nickname(&config, &username)
+        .await
+        .map_err(|_| Json(json!({"nickname":username})))
+        .map(|j| Json(json!({"nickname":j})))
 }
