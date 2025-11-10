@@ -43,7 +43,7 @@ impl Config {
             ..StringGenerator::default()
         };
         let ApiKeyResults::String(key) = api_key::string(options) else {
-            return Err("".into());
+            return Err("could not generate api key".into());
         };
         let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
         let config_path = xdg_dirs
