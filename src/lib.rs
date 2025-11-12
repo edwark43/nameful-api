@@ -27,6 +27,7 @@ static START: Once = Once::new();
 
 #[derive(Deserialize)]
 pub struct Config {
+    pub cache_time: u32,
     pub api_key: String,
     pub port: u16,
     pub osm_token: String,
@@ -46,17 +47,14 @@ impl Config {
             return Err("could not generate api key".into());
         };
         let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
-        let config_path = xdg_dirs
-            .place_config_file("config.toml")?;
-        let maxmind_db_path = xdg_dirs
-            .place_data_file("GeoLite2-City.mmdb")?;
-        let fallback_path = xdg_dirs
-            .place_cache_file("skins/.fallback.png")?;
+        let config_path = xdg_dirs.place_config_file("config.toml")?;
+        let maxmind_db_path = xdg_dirs.place_data_file("GeoLite2-City.mmdb")?;
+        let fallback_path = xdg_dirs.place_cache_file("skins/.fallback.png")?;
         if xdg_dirs.find_config_file(&config_path) == None {
             let mut config_file = fs::File::create(&config_path)?;
             write!(
                 &mut config_file,
-                "api_key = \"{}\"\nport = 3568\nosm_token = \"\"\npropaganda_path = \"path/to/propaganda\"",
+                "cache_time = 12\napi_key = \"{}\"\nport = 3568\nosm_token = \"\"\npropaganda_path = \"path/to/propaganda\"",
                 key
             )?;
         }
@@ -243,8 +241,7 @@ pub fn write_json_to_file(json: &mut Value, path: &PathBuf) -> Result<(), Box<dy
 pub fn backup(json: &mut Value) -> Result<(), Box<dyn Error>> {
     let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
     let now: DateTime<Utc> = SystemTime::now().try_into()?;
-    let data_backup = xdg_dirs
-        .place_data_file(format!("data-{}.json", now.format("%s")))?;
+    let data_backup = xdg_dirs.place_data_file(format!("data-{}.json", now.format("%s")))?;
     write_json_to_file(json, &data_backup)?;
     Ok(())
 }
@@ -274,13 +271,11 @@ pub fn fetch_osm_info() -> Result<Value, Box<dyn Error>> {
 
 pub async fn download_skin(username: &str) -> Result<String, Box<dyn Error>> {
     let xdg_dirs = BaseDirectories::with_prefix("nameful-api");
-    let skin_path = xdg_dirs
-        .place_cache_file(format!("skins/{}.png", username))?;
+    let skin_path = xdg_dirs.place_cache_file(format!("skins/{}.png", username))?;
     if xdg_dirs.find_cache_file(&skin_path) != None {
         let metadata = fs::metadata(&skin_path)?;
         if let Ok(time) = metadata.created() {
-            let difference = time
-                .duration_since(time)?;
+            let difference = time.duration_since(time)?;
             if difference.as_secs() < 604800 {
                 return Ok(skin_path
                     .to_str()

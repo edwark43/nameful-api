@@ -24,17 +24,17 @@ use xdg::BaseDirectories;
 async fn main() {
     if let Err(e) = Config::init().await {
         eprintln!("API Crashed due to: {e}");
-        return
+        return;
     }
     let config = match Config::new() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("API Crashed due to: {e}");
-            return
+            return;
         }
     };
     let mut scheduler = AsyncScheduler::new();
-    scheduler.every(6.hours()).run(async || {
+    scheduler.every(config.cache_time.hours()).run(async || {
         if let Err(e) = cache_nicks().await {
             println!("Caching Error: {}", e)
         }
@@ -76,22 +76,22 @@ async fn main() {
         .merge(put_routes)
         .merge(post_routes)
         .merge(delete_routes);
-    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
-        .await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("API Crashed due to: {e}");
-                return
-            }
-        };
+    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("API Crashed due to: {e}");
+            return;
+        }
+    };
 
     if let Err(e) = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await {
+    .await
+    {
         eprintln!("API Crashed due to: {e}");
-        return
+        return;
     }
     println!("API successfully started");
 }
@@ -286,9 +286,9 @@ async fn render(
             eprintln!("{}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?
-            .to_str()
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
-            .to_string();
+        .to_str()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+        .to_string();
 
     Render::new(
         skin_path,
