@@ -84,16 +84,17 @@ async fn main() {
         }
     };
 
-    if let Err(e) = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    {
+    if let Err(e) = {
+        println!("API successfully started");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    } {
         eprintln!("API Crashed due to: {e}");
         return;
     }
-    println!("API successfully started");
 }
 
 async fn auth(req: Request, next: Next) -> Result<Response, StatusCode> {
